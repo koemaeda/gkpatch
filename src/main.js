@@ -45,11 +45,13 @@ async function main(methodName, leftPath, rightPath, outputPath) {
   for (file of files) {
     if (++processedFiles % 50 === 0) {
       const progress = Math.round((processedFiles * 100) / files.length);
-      console.log(`${progress}% (${processedFiles} files processed)`);
+      console.log(`... ${progress}% (${processedFiles} files processed)`);
     }
 
-    if (/_[a-z]{2}(_[A-Z]{2})?.properties$/.test(file.fileName))
+    if (!program.withlanguage && /_[a-z]{2}(_[A-Z]{2})?.properties$/.test(file.fileName)) {
+      console.log(chalk.grey(`  Ignored file: ${file}`));
       continue; // skip language files
+    }
 
     if (file && file[methodName]) {
       if (program.verbose)
@@ -69,27 +71,30 @@ async function main(methodName, leftPath, rightPath, outputPath) {
 
 
 program
-  .name('gkpatch')
+  .name('gk-patch-generator')
   .description('Property/XML file comparison and patch generation tool for GK custom templates')
   .option('-v, --verbose', 'Verbose output')
-  .option('--overwrite', 'Overwrite existing files');
+  .option('--overwrite', 'Overwrite existing files (ignored by default)')
+  .option('--withlanguage', 'Process language files')
+  .option('--ignoredeleted', 'Ignore deleted properties/elements')
+  .option('--ignorenew', 'Ignore new properties/elements');
 
 program
   .command('c14n')
   .description('Canonicalize .properties and .xml files and save them')
-  .arguments("<input path> <output path>")
+  .arguments("<input-path> <output-path>")
   .action((inputPath, outputPath) => main('canonicalize', inputPath, null, outputPath));
 
 program
   .command('compare')
   .description('Compare files based on their content')
-  .arguments("<left path> <right path>")
+  .arguments("<left-path> <right-path>")
   .action((leftPath, rightPath) => main('compare', leftPath, rightPath));
 
 program
   .command('patch')
   .description('Generate .patch files')
-  .arguments("<left path> <right path> <output-path>")
+  .arguments("<left-path> <right-path> <output-path>")
   .action((leftPath, rightPath, outputPath) => main('patch', leftPath, rightPath, outputPath));
 
 program.parse(process.argv);

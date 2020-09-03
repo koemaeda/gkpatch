@@ -46,7 +46,11 @@ module.exports = class PropertiesFilePair extends FilePair {
       return;
     }
 
-    console.log(chalk.yellow(`Different: ${this.relativePath}`));
+    console.log(chalk.yellow(`Different: ${this.relativePath} (${diff.length} changes)`));
+    if (diff.length > 100) {
+      console.warn(chalk.yellow('  More than 100 changes. Individual differences will not be displayed.'));
+      return;
+    }
 
     // TODO - contents flag
     diff.forEach(d => {
@@ -101,7 +105,9 @@ module.exports = class PropertiesFilePair extends FilePair {
     else if (program.verbose)
       console.log(chalk.yellow(`  Different: ${this.relativePath} -> generate patch file`));
 
-    const patchItems = diff.map(d => {
+    const patchItems = diff
+    .filter(d => !/^@.+@$/.test(d.leftValue)) // ignore dynamic properties
+    .map(d => {
       const item = {
         name: d.key,
         value: d.rightValue
@@ -113,9 +119,7 @@ module.exports = class PropertiesFilePair extends FilePair {
       if (/[<>]/.test(item.value))
         item.value = `<![CDATA[${item.value}]]>`;
 
-      if (d.leftValue && d.rightValue)
-        item.operation = 'modify';
-      else if (d.rightValue == undefined) {
+      if (d.rightValue == undefined) {
         item.operation = 'comment';
       }
       else if (d.leftValue == undefined) {
@@ -129,6 +133,9 @@ module.exports = class PropertiesFilePair extends FilePair {
             item.before = right.getKeyAfter(item.before);
         }
       }
+      else
+        item.operation = 'modify';
+
       return item;
     });
     if (program.verbose)
@@ -145,7 +152,7 @@ module.exports = class PropertiesFilePair extends FilePair {
         `</${p.operation}>`).join('') +
       '</processor>');
 
-    const patchPath = path.resolve(this.outputPath, 'patch', this.relativePath + '.patch');
+    const patchPath = path.resolve(this.outputPath, 'patch', this.relativePath + '.patch.xml');
     this.save(patchXml, patchPath);
   }
 

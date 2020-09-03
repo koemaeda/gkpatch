@@ -1,155 +1,83 @@
 const program = require('commander');
-const chalk = require('chalk');
-const fs = require('fs');
-const path = require('path');
-const jsDiff = require('diff');
-const beautify = require('js-beautify').html;
-const FilePair = require('./FilePair');
-const PropertiesFile = require('./PropertiesFile');
+const javaProps = require('java-props');
+const propUtils = require('java-props/dist/utils');
 
-module.exports = class PropertiesFilePair extends FilePair {
+function escapePropertyValue(value) {
+  return value.replace(/([\:=])/g, '\$1');
+}
 
-  constructor(paths) {
-    super(paths);
+module.exports = class PropertiesFile {
+
+  constructor(filePath) {
+    this.filePath = filePath;
   }
 
-  async canonicalize() {
-    const props = new PropertiesFile(this.fullLeftPath);
-    await props.parse();
-    this.save(props.canonicalize());
+  async parse() {
+    return javaProps.parseFile(this.filePath)
+      .then(obj => {
+        if (program.verbose)
+          console.log(`    ${Object.keys(obj).length} properties read`);
+        this.properties = obj;
+      });
   }
 
-  async compare() {
-    let left, right;
-    if (this.fullLeftPath) {
-      left = new PropertiesFile(this.fullLeftPath);
-      await left.parse();
-    }
-    if (this.fullRightPath) {
-      right = new PropertiesFile(this.fullRightPath);
-      await right.parse();
-    }
-
-    if (! this.fullLeftPath) {
-      console.log(chalk.red(`Right only: ${this.relativePath}`));
-      return;
-    }
-    else if (! this.fullRightPath) {
-      console.log(chalk.green(`Left only: ${this.relativePath}`));
-      return;
-    }
-
-    const diff = left.compare(right);
-    if (diff.length === 0) {
-      if (program.verbose)
-        console.log(chalk.grey(`Identical: ${this.relativePath}`));
-      return;
-    }
-
-    console.log(chalk.yellow(`Different: ${this.relativePath} (${diff.length} changes)`));
-    if (diff.length > 100) {
-      console.warn(chalk.yellow('  More than 100 changes. Individual differences will not be displayed.'));
-      return;
-    }
-
-    // TODO - contents flag
-    diff.forEach(d => {
-      if (d.leftValue && d.rightValue) {
-        console.log(chalk.red  (`  - ${d.key}=${d.leftValue}`));
-        console.log(chalk.green(`  + ${d.key}=${d.rightValue}`));
-      }
-      else if (d.rightValue == undefined) {
-        console.log(chalk.red  (`  - ${d.key}=${d.leftValue}`));
-      }
-      else if (d.leftValue == undefined) {
-        console.log(chalk.green  (`  + ${d.key}=${d.rightValue}`));
-      }
-    });
+  canonicalize() {
+    return Object.keys(this.properties)
+      .sort() // alphabetically sorted keys
+      .map(key => key + '=' + escapePropertyValue(this.properties[key]))
+      .join('\r\n');
   }
 
-  async patch() {
-    let left, right;
-    if (this.fullLeftPath) {
-      left = new PropertiesFile(this.fullLeftPath);
-      await left.parse();
-    }
-    if (this.fullRightPath) {
-      right = new PropertiesFile(this.fullRightPath);
-      await right.parse();
-    }
+  compare(otherPropertiesFile) {
+    let result = [
+      // Different and left-only
+      ...Object.keys(this.properties)
+        .filter(key => this.properties[key] !== otherPropertiesFile.properties[key])
+        .map(key => ({
+          key: key,
+          leftValue: propUtils.encodeLine(this.properties[key]),
+          rightValue: otherPropertiesFile.properties[key]
+            ? propUtils.encodeLine(otherPropertiesFile.properties[key])
+            : undefined
+        })),
 
-    if (! this.fullLeftPath) {
-      if (program.verbose)
-        console.log(chalk.grey(`  Right only: ${this.relativePath} -> ignored`));
-      return;
-    }
-    else if (! this.fullRightPath) {
-      if (program.verbose)
-        console.log(chalk.green(`  Left only: ${this.relativePath} -> copy to overwrite`));
-      this.copy(this.fullLeftPath, path.resolve(this.outputPath, 'overwrite', this.relativePath));
-      return;
-    }
+      // Right-only
+      ...Object.keys(otherPropertiesFile.properties)
+        .filter(key => this.properties[key] === undefined)
+        .map(key => ({
+          key: key,
+          leftValue: undefined,
+          rightValue: propUtils.encodeLine(otherPropertiesFile.properties[key])
+        }))
+    ];
 
-    const diff = left.compare(right);
-    if (diff.length === 0) {
-      if (program.verbose)
-        console.log(chalk.grey(`Identical: ${this.relativePath}`));
-      return;
-    }
-    else if (diff.length > 100) {
-      console.warn(chalk.yellow(`WARNING: More than 100 differences found in ${this.relativePath} (${diff.length} total).` +
-        ' Moved to overwrite instead of patch.'));
-      this.copy(this.fullLeftPath, path.resolve(this.outputPath, 'overwrite', this.relativePath));
-      return;
-    }
-    else if (program.verbose)
-      console.log(chalk.yellow(`  Different: ${this.relativePath} -> generate patch file`));
+    if (program.ignoredeleted)
+      result = result.filter(e => e.rightValue !== undefined)
 
-    const patchItems = diff.map(d => {
-      const item = {
-        name: d.key,
-        value: d.rightValue
-      };
-      if (item.value && item.value.indexOf('${') !== -1)
-        console.warn(chalk.yellow(`WARNING: Property ${item.name} contains placeholders.`));
-      if (item.value == undefined)
-        delete item.value;
+    if (program.ignorenew)
+      result = result.filter(e => e.leftValue !== undefined)
 
-      if (d.rightValue == undefined) {
-        item.operation = 'comment';
-      }
-      if (d.leftValue == undefined) {
-        item.operation = 'add';
-        item.after = d.key;
-        while (item.after && !left.keyExists(item.after))
-          item.after = right.getKeyBefore(item.after);
-        if (! item.after) {
-          item.before = d.key;
-          while (item.before && !left.keyExists(item.before))
-            item.before = right.getKeyAfter(item.before);
-        }
-      }
-      else
-        item.operation = 'modify';
+    return result;
+  }
 
-      return item;
-    });
-    if (program.verbose)
-      console.log(`    ${patchItems.length} patch item generated`);
+  keyExists(key) {
+    return Object.keys(this.properties).indexOf(key) !== -1;
+  }
 
-    const patchXml = beautify(
-      `<!-- Generated by gkpatch on ${new Date().toLocaleString()} -->` +
-      '<processor>' +
-      patchItems.map(p =>
-        `<${p.operation}>` +
-        Object.keys(p).filter(key => /name|value|before|after/.test(key))
-          .map(key => `<${key}>${p[key]}</${key}>`)
-          .join('') +
-        `</${p.operation}>`).join('') +
-      '</processor>');
+  getKeyBefore(key) {
+    const allKeys = Object.keys(this.properties);
+    const beforeIndex = allKeys.indexOf(key) - 1;
+    return (beforeIndex >= 0 && allKeys.length > beforeIndex)
+      ? allKeys[beforeIndex] : undefined;
+  }
 
-    const patchPath = path.resolve(this.outputPath, 'patch', this.relativePath + '.patch');
-    this.save(patchXml, patchPath);
+  getKeyAfter(key) {
+    const allKeys = Object.keys(this.properties);
+    if (allKeys.indexOf(key) === -1)
+      return undefined;
+    const afterIndex = allKeys.indexOf(key) + 1;
+    return (allKeys.length > afterIndex)
+      ? allKeys[afterIndex] : undefined;
   }
 
 }
